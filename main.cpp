@@ -89,6 +89,7 @@ typedef struct {
     bool infront_flag;
     bool output_bin;
     bool compress;
+    int frame_width;
 } Config;
 
 // forwards for compressors
@@ -155,6 +156,25 @@ Image *read_png_file(const char *filename) {
     return image;
 }
 
+Image *image_transform(Image *src_image, int new_width) {
+  Image *dst_image = new Image;
+
+  dst_image->width=new_width;
+  dst_image->height=(src_image->width/dst_image->width)*src_image->height;
+
+  for (int i = 0; i < MAX_COLOURS; i++)
+      dst_image->palette[i]=src_image->palette[i];
+
+  dst_image->pixels.reserve(dst_image->height*dst_image->width);
+
+  for (int y = 0; y < dst_image->height; y++)
+      for (int x = 0; x < dst_image->width; x++)
+          dst_image->pixels[x + y * dst_image->width] = src_image->pixels[x + (y / src_image->height) * dst_image->width + (y % src_image->height) * src_image->width];
+
+  delete src_image;
+  return dst_image;
+}
+
 void write_png_file(const char *filename, int width, int height, const unsigned char *pixels, Color *palette) {
     std::vector<unsigned char> png;
     lodepng::State state;
@@ -183,14 +203,18 @@ void show_usage() {
             "\n"
             "Option               Effect\n"
             "\n"
+            "-framewidth <n>      The width in pixel of a frame in the imagestrip.\n"
+            "                     The width should be multiple of 8 and can be specified in either decimal or hex\n"
+            "                     Hex numbers prefixed with 0x eg. 0x1A\n"
+            "\n"
             "-[no]removedupes     Enable/disable the removal of duplicate tiles\n"
-            "                     *default (-removedupes)\n"
+            "                     *default (-noremovedupes)\n"
             "\n"
             "-[no]mirror          Enable/disable tile mirroring to further optimise\n"
-            "                     duplicates *default (-mirror)\n"
+            "                     duplicates *default (-nomirror)\n"
             "\n"
-            "-tilesize <size>     '8x8'      Treat tile data as 8x8 *default*\n"
-            "                     '8x16'     Treat tile data as 8x16\n"
+            "-tilesize <size>     '8x8'      Treat tile data as 8x8\n"
+            "                     '8x16'     Treat tile data as 8x16 *default*\n"
             "\n"
             "-tileformat <format> 'planar'   Output tileset data in Planar format. *default* \n"
             "                     'chunky'   Output tileset data in chunky\n"
@@ -229,13 +253,12 @@ void show_usage() {
             "                     Save tilemap and corresponding tileset in the Tiled\n"
             "                     mapeditor TMX format.\n"
             "\n"
-            "-binary \n"
-            "                     Output binary files instead of asm source files.\n"
-            "                     Ignored for sms_cl123 palette format, TMX, and PNG output.\n"
+            "-asm \n"
+            "                     Output asm source files instead of binary files.\n"
             "\n"
             "-compress \n"
             "                     Compress output binary files. Uses STM compression for tilemaps\n"
-            "                     and PSG compression for tiles. Implies -binary if not also specified.\n\n";
+            "                     and PSG compression for tiles.\n\n";
     std::cout << s;
 }
 
@@ -248,16 +271,17 @@ Config parse_commandline_opts(int argc, char **argv) {
     }
 
     config.input_filename = argv[1];
-    config.remove_dups = true;
-    config.mirror = true;
+    config.remove_dups = false;            // changed the default
+    config.mirror = false;                 // changed the default
     config.paletteOutputFormat = SMS;
-    config.tileSize = TILE_8x8;
+    config.tileSize = TILE_8x16;           // changed the default
     config.tileOutputFormat = TILE_FORMAT_PLANAR;
     config.use_sprite_pal = false;
     config.infront_flag = false;
     config.tile_start_offset = 0;
-    config.output_bin = false;
+    config.output_bin = true;              // changed the default
     config.compress = false;
+    config.frame_width = 0;
 
     config.output_tile_image_filename = NULL;
     config.tmx_filename = NULL;
@@ -306,6 +330,11 @@ Config parse_commandline_opts(int argc, char **argv) {
                 if (i < argc) {
                     config.tile_start_offset = strtol(argv[i], NULL, 0);
                 }
+            } else if (strcmp(cmd, "framewidth") == 0) {
+                i++;
+                if (i < argc) {
+                    config.frame_width = strtol(argv[i], NULL, 0);
+                }
             } else if (strcmp(cmd, "spritepalette") == 0) {
                 config.use_sprite_pal = true;
             } else if (strcmp(cmd, "infrontofsprites") == 0) {
@@ -352,9 +381,10 @@ Config parse_commandline_opts(int argc, char **argv) {
                 if (i < argc) {
                     config.tmx_filename = argv[i];
                 }
-            } else if (strcmp(cmd, "binary") == 0) {
-                config.output_bin = true;
+            } else if (strcmp(cmd, "asm") == 0) {
+                config.output_bin = false;
             } else if (strcmp(cmd, "compress") == 0) {
+                config.output_bin = true;
                 config.compress = true;
             } else {
                 printf("Unknown option: '-%s'\n", cmd);
@@ -376,7 +406,7 @@ Config parse_commandline_opts(int argc, char **argv) {
 }
 
 void write_tiles_to_png_image(const char *output_image_filename, Image *input_image, std::vector<Tile *> *tiles) {
-    int output_width = 16;
+    int output_width = NUM_TILE_COLS_IN_PNG_IMAGE;
     int output_height = tiles->size() / output_width;
     if (tiles->size() % output_width != 0) {
         output_height++;
@@ -786,6 +816,13 @@ int process_file(Config config) {
     Image *image = read_png_file(config.input_filename);
     if (image == NULL) {
         return -1;
+    }
+
+    printf("Input image size %dx%d\n", image->width, image->height);
+
+    if (config.frame_width != 0) {
+      image = image_transform(image, config.frame_width);
+      printf("Transformed image size %dx%d\n", image->width, image->height);
     }
 
     if (image->width % TILE_WIDTH != 0) {
